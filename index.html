@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Собери кристаллы — Three.js</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0b0d17;
+      color: #fff;
+    }
+    canvas { display: block; }
+
+    /* HUD */
+    #hud {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 30px;
+      padding: 12px 24px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      backdrop-filter: blur(10px);
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      z-index: 10;
+    }
+    #hud .val { color: #6ee7ff; }
+
+    /* Экран старта / финала */
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      background: rgba(11, 13, 23, 0.85);
+      backdrop-filter: blur(6px);
+      z-index: 20;
+      text-align: center;
+      transition: opacity 0.4s ease;
+    }
+    #overlay.hidden { opacity: 0; pointer-events: none; }
+    #overlay h1 {
+      margin: 0;
+      font-size: 42px;
+      background: linear-gradient(90deg, #6ee7ff, #a78bfa, #f472b6);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    #overlay p { margin: 0; font-size: 16px; color: rgba(255,255,255,0.7); }
+    #overlay button {
+      margin-top: 10px;
+      padding: 14px 36px;
+      font-size: 17px;
+      font-weight: 700;
+      color: #0b0d17;
+      background: linear-gradient(90deg, #6ee7ff, #a78bfa);
+      border: none;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.2s ease;
+      box-shadow: 0 8px 30px rgba(110, 231, 255, 0.35);
+    }
+    #overlay button:hover { transform: translateY(-2px); box-shadow: 0 12px 40px rgba(110, 231, 255, 0.55); }
+
+    /* Всплывашка "+1" */
+    #score-pop {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 60px;
+      font-weight: 800;
+      color: #6ee7ff;
+      opacity: 0;
+      pointer-events: none;
+      text-shadow: 0 0 30px rgba(110, 231, 255, 0.8);
+      z-index: 5;
+    }
+    #score-pop.pop {
+      animation: pop 0.6s ease-out;
+    }
+    @keyframes pop {
+      0%   { opacity: 1; transform: translate(-50%, -50%) scale(0.6); }
+      100% { opacity: 0; transform: translate(-50%, -120%) scale(1.2); }
+    }
+  </style>
+</head>
+<body>
+
+  <div id="hud">
+    <div>Очки: <span class="val" id="score">0</span> / <span class="val" id="total">0</span></div>
+    <div>Время: <span class="val" id="time">30.0</span>с</div>
+  </div>
+
+  <div id="score-pop">+1</div>
+
+  <div id="overlay">
+    <h1>Собери кристаллы</h1>
+    <p>Управление: <b>WASD</b> или <b>стрелки</b>. Собери все кристаллы до конца таймера!</p>
+    <button id="startBtn">Начать игру</button>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    // ============================================================
+    // КОНСТАНТЫ
+    // ============================================================
+    const FIELD_HALF = 9;        // половина размера игрового поля
+    const PLAYER_SPEED = 9;      // единиц в секунду
+    const CRYSTAL_COUNT = 10;    // сколько кристаллов
+    const TIME_LIMIT = 30;       // секунд на игру
+    const PICKUP_RADIUS = 0.9;   // радиус сбора
+
+    // ============================================================
+    // СЦЕНА
+    // ============================================================
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b0d17);
+    scene.fog = new THREE.Fog(0x0b0d17, 18, 35);
+
+    const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 200);
+    camera.position.set(0, 18, 16);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    // ============================================================
+    // СВЕТ
+    // ============================================================
+    scene.add(new THREE.HemisphereLight(0x6ee7ff, 0x111122, 0.7));
+
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.6);
+    keyLight.position.set(8, 14, 6);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(1024, 1024);
+    keyLight.shadow.camera.left = -12;
+    keyLight.shadow.camera.right = 12;
+    keyLight.shadow.camera.top = 12;
+    keyLight.shadow.camera.bottom = -12;
+    scene.add(keyLight);
+
+    // ============================================================
+    // ПОЛ
+    // ============================================================
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(FIELD_HALF * 2, FIELD_HALF * 2),
+      new THREE.MeshStandardMaterial({ color: 0x1a1d2e, roughness: 0.95 })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // Сетка (для ориентации)
+    const grid = new THREE.GridHelper(FIELD_HALF * 2, 18, 0x2a3050, 0x1f2440);
+    grid.position.y = 0.01;
+    scene.add(grid);
+
+    // ============================================================
+    // ИГРОК
+    // ============================================================
+    const player = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: 0x6ee7ff, emissive: 0x1a8aa0, emissiveIntensity: 0.6, roughness: 0.3 })
+    );
+    player.position.set(0, 0.5, 0);
+    player.castShadow = true;
+    scene.add(player);
+
+    // ============================================================
+    // КРИСТАЛЛЫ
+    // ============================================================
+    const crystals = [];
+    const crystalGeo = new THREE.OctahedronGeometry(0.45, 0);
+    const crystalMat = new THREE.MeshStandardMaterial({
+      color: 0xa78bfa, emissive: 0x7c5cf0, emissiveIntensity: 1.2, roughness: 0.2, metalness: 0.3
+    });
+
+    function spawnCrystals() {
+      // Убираем старые
+      crystals.forEach(c => scene.remove(c));
+      crystals.length = 0;
+
+      for (let i = 0; i < CRYSTAL_COUNT; i++) {
+        const c = new THREE.Mesh(crystalGeo, crystalMat.clone());
+        c.castShadow = true;
+        // Случайная позиция, не слишком близко к центру (где стартует игрок)
+        let x, z;
+        do {
+          x = (Math.random() - 0.5) * (FIELD_HALF * 2 - 2);
+          z = (Math.random() - 0.5) * (FIELD_HALF * 2 - 2);
+        } while (Math.hypot(x, z) < 2.5);
+        c.position.set(x, 0.8, z);
+        scene.add(c);
+        crystals.push(c);
+      }
+      document.getElementById('total').textContent = CRYSTAL_COUNT;
+    }
+
+    // ============================================================
+    // УПРАВЛЕНИЕ
+    // ============================================================
+    const keys = {};
+    addEventListener('keydown', (e) => { keys[e.key.toLowerCase()] = true; });
+    addEventListener('keyup',   (e) => { keys[e.key.toLowerCase()] = false; });
+
+    function getMoveDir() {
+      let x = 0, z = 0;
+      if (keys['w'] || keys['arrowup'])    z -= 1;
+      if (keys['s'] || keys['arrowdown'])  z += 1;
+      if (keys['a'] || keys['arrowleft'])  x -= 1;
+      if (keys['d'] || keys['arrowright']) x += 1;
+      const len = Math.hypot(x, z);
+      if (len > 0) { x /= len; z /= len; }
+      return { x, z };
+    }
+
+    // ============================================================
+    // ИГРОВОЕ СОСТОЯНИЕ
+    // ============================================================
+    const state = {
+      running: false,
+      score: 0,
+      timeLeft: TIME_LIMIT,
+      elapsed: 0
+    };
+
+    const scoreEl = document.getElementById('score');
+    const timeEl  = document.getElementById('time');
+    const overlay = document.getElementById('overlay');
+    const startBtn = document.getElementById('startBtn');
+    const scorePop = document.getElementById('score-pop');
+
+    function resetGame() {
+      state.running = true;
+      state.score = 0;
+      state.timeLeft = TIME_LIMIT;
+      state.elapsed = 0;
+      player.position.set(0, 0.5, 0);
+      scoreEl.textContent = '0';
+      timeEl.textContent = TIME_LIMIT.toFixed(1);
+      spawnCrystals();
+      overlay.classList.add('hidden');
+    }
+
+    function endGame(win) {
+      state.running = false;
+      overlay.classList.remove('hidden');
+      overlay.querySelector('h1').textContent = win ? '🏆 Победа!' : '⏰ Время вышло';
+      overlay.querySelector('p').innerHTML = win
+        ? `Ты собрал все кристаллы за <b>${(TIME_LIMIT - state.timeLeft).toFixed(1)}</b> сек!`
+        : `Собрано <b>${state.score}</b> из <b>${CRYSTAL_COUNT}</b>. Попробуй ещё!`;
+      startBtn.textContent = 'Играть снова';
+    }
+
+    startBtn.addEventListener('click', resetGame);
+
+    // ============================================================
+    // ИГРОВОЙ ЦИКЛ
+    // ============================================================
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.05);
+      const t = clock.getElapsedTime();
+
+      // Анимация кристаллов (вращение + парение) — всегда
+      for (const c of crystals) {
+        c.rotation.y += dt * 2;
+        c.position.y = 0.8 + Math.sin(t * 2 + c.position.x) * 0.15;
+      }
+
+      if (state.running) {
+        // --- Таймер ---
+        state.timeLeft -= dt;
+        timeEl.textContent = Math.max(0, state.timeLeft).toFixed(1);
+        if (state.timeLeft <= 0) {
+          endGame(false);
+        }
+
+        // --- Движение игрока ---
+        const dir = getMoveDir();
+        player.position.x += dir.x * PLAYER_SPEED * dt;
+        player.position.z += dir.z * PLAYER_SPEED * dt;
+
+        // Ограничиваем полем
+        const lim = FIELD_HALF - 0.5;
+        player.position.x = Math.max(-lim, Math.min(lim, player.position.x));
+        player.position.z = Math.max(-lim, Math.min(lim, player.position.z));
+
+        // Небольшой наклон в сторону движения — приятный штрих
+        player.rotation.z += (-dir.x * 0.25 - player.rotation.z) * Math.min(1, dt * 10);
+        player.rotation.x += ( dir.z * 0.25 - player.rotation.x) * Math.min(1, dt * 10);
+
+        // --- Сбор кристаллов ---
+        for (let i = crystals.length - 1; i >= 0; i--) {
+          const c = crystals[i];
+          const dx = c.position.x - player.position.x;
+          const dz = c.position.z - player.position.z;
+          if (Math.hypot(dx, dz) < PICKUP_RADIUS) {
+            scene.remove(c);
+            crystals.splice(i, 1);
+            state.score++;
+            scoreEl.textContent = state.score;
+            showScorePop();
+
+            if (state.score >= CRYSTAL_COUNT) {
+              endGame(true);
+            }
+          }
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    function showScorePop() {
+      scorePop.classList.remove('pop');
+      // перезапуск анимации
+      void scorePop.offsetWidth;
+      scorePop.classList.add('pop');
+    }
+
+    // ============================================================
+    // СТАРТ
+    // ============================================================
+    spawnCrystals();      // показать кристаллы ещё до старта
+    animate();
+
+    // ============================================================
+    // РЕСАЙЗ
+    // ============================================================
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+  </script>
+</body>
+</html>
